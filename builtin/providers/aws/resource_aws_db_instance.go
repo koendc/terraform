@@ -32,13 +32,14 @@ func resourceAwsDbInstance() *schema.Resource {
 
 			"username": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Computed: true,
 				ForceNew: true,
 			},
 
 			"password": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 			},
 
 			"engine": &schema.Schema{
@@ -49,7 +50,8 @@ func resourceAwsDbInstance() *schema.Resource {
 
 			"engine_version": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Computed: true,
 			},
 
 			"storage_encrypted": &schema.Schema{
@@ -60,7 +62,8 @@ func resourceAwsDbInstance() *schema.Resource {
 
 			"allocated_storage": &schema.Schema{
 				Type:     schema.TypeInt,
-				Required: true,
+				Optional: true,
+				Computed: true,
 			},
 
 			"storage_type": &schema.Schema{
@@ -150,6 +153,12 @@ func resourceAwsDbInstance() *schema.Resource {
 				Set:      schema.HashString,
 			},
 
+			"snapshot_identifier": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
 			"final_snapshot_identifier": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
@@ -208,7 +217,7 @@ func resourceAwsDbInstance() *schema.Resource {
 	}
 }
 
-func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceAwsDbInstanceCreateNew(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).rdsconn
 	tags := tagsFromMapRDS(d.Get("tags").(map[string]interface{}))
 
@@ -343,6 +352,85 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 	}
 
 	return resourceAwsDbInstanceRead(d, meta)
+}
+
+func resourceAwsDbInstanceCreateFromSnapshot(d *schema.ResourceData, meta interface{}) error {
+	conn := meta.(*AWSClient).rdsconn
+	opts := rds.RestoreDBInstanceFromDBSnapshotInput{
+		DBInstanceClass:      aws.String(d.Get("instance_class").(string)),
+		DBInstanceIdentifier: aws.String(d.Get("identifier").(string)),
+	}
+
+	if attr, ok := d.GetOk("snapshot_identifier"); ok {
+		opts.DBSnapshotIdentifier = aws.String(attr.(string))
+	}
+
+	if attr, ok := d.GetOk("storage_type"); ok {
+		opts.StorageType = aws.String(attr.(string))
+	}
+
+	if attr, ok := d.GetOk("iops"); ok {
+		opts.IOPS = aws.Long(int64(attr.(int)))
+	}
+
+	if attr, ok := d.GetOk("port"); ok {
+		opts.Port = aws.Long(int64(attr.(int)))
+	}
+
+	if attr, ok := d.GetOk("multi_az"); ok {
+		opts.MultiAZ = aws.Boolean(attr.(bool))
+	}
+
+	if attr, ok := d.GetOk("availability_zone"); ok {
+		opts.AvailabilityZone = aws.String(attr.(string))
+	}
+
+	if attr, ok := d.GetOk("publicly_accessible"); ok {
+		opts.PubliclyAccessible = aws.Boolean(attr.(bool))
+	}
+
+	if attr, ok := d.GetOk("db_subnet_group_name"); ok {
+		opts.DBSubnetGroupName = aws.String(attr.(string))
+	}
+
+	log.Printf("[DEBUG] DB Instance create configuration: %#v", opts)
+	_, err := conn.RestoreDBInstanceFromDBSnapshot(&opts)
+	if err != nil {
+		return fmt.Errorf("Error creating DB Instance: %s", err)
+	}
+
+	d.SetId(d.Get("identifier").(string))
+
+	log.Printf("[INFO] DB Instance ID: %s", d.Id())
+
+	log.Println(
+		"[INFO] Waiting for DB Instance to be available")
+
+	stateConf := &resource.StateChangeConf{
+		Pending:    []string{"creating", "backing-up", "modifying"},
+		Target:     "available",
+		Refresh:    resourceAwsDbInstanceStateRefreshFunc(d, meta),
+		Timeout:    40 * time.Minute,
+		MinTimeout: 10 * time.Second,
+		Delay:      30 * time.Second, // Wait 30 secs before starting
+	}
+
+	// Wait, catching any errors
+	_, err = stateConf.WaitForState()
+	if err != nil {
+		return err
+	}
+
+	return resourceAwsDbInstanceRead(d, meta)
+}
+
+func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error {
+
+	if len(d.Get("snapshot_identifier").(string)) > 0 {
+		return resourceAwsDbInstanceCreateFromSnapshot(d, meta)
+	} else {
+		return resourceAwsDbInstanceCreateNew(d, meta)
+	}
 }
 
 func resourceAwsDbInstanceRead(d *schema.ResourceData, meta interface{}) error {
