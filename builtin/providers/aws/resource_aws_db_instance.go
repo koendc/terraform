@@ -33,18 +33,20 @@ func resourceAwsDbInstance() *schema.Resource {
 
 			"username": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Computed: true,
 				ForceNew: true,
 			},
 
 			"password": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 			},
 
 			"engine": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Computed: true,
 				ForceNew: true,
 				StateFunc: func(v interface{}) string {
 					value := v.(string)
@@ -66,7 +68,8 @@ func resourceAwsDbInstance() *schema.Resource {
 
 			"allocated_storage": &schema.Schema{
 				Type:     schema.TypeInt,
-				Required: true,
+				Optional: true,
+				Computed: true,
 			},
 
 			"storage_type": &schema.Schema{
