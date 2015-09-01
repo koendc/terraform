@@ -3,6 +3,7 @@ package aws
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ func TestAccAWSDBInstance_basic(t *testing.T) {
 		CheckDestroy: testAccCheckAWSDBInstanceDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
-				Config: testAccAWSDBInstanceConfig,
+				Config: testAccAWSDBInstanceConfig(rand.New(rand.NewSource(time.Now().UnixNano())).Int()),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSDBInstanceExists("aws_db_instance.bar", &v),
 					testAccCheckAWSDBInstanceAttributes(&v),
@@ -71,32 +72,55 @@ func testAccCheckAWSDBInstanceDestroy(s *terraform.State) error {
 	conn := testAccProvider.Meta().(*AWSClient).rdsconn
 
 	for _, rs := range s.RootModule().Resources {
-		if rs.Type != "aws_db_instance" {
-			continue
-		}
+		if rs.Type == "aws_db_instance" {
 
-		// Try to find the Group
-		var err error
-		resp, err := conn.DescribeDBInstances(
-			&rds.DescribeDBInstancesInput{
-				DBInstanceIdentifier: aws.String(rs.Primary.ID),
-			})
+			// Try to find the Group
+			var err error
+			resp, err := conn.DescribeDBInstances(
+				&rds.DescribeDBInstancesInput{
+					DBInstanceIdentifier: aws.String(rs.Primary.ID),
+				})
 
-		if err == nil {
-			if len(resp.DBInstances) != 0 &&
-				*resp.DBInstances[0].DBInstanceIdentifier == rs.Primary.ID {
-				return fmt.Errorf("DB Instance still exists")
+			if err == nil {
+				if len(resp.DBInstances) != 0 &&
+					*resp.DBInstances[0].DBInstanceIdentifier == rs.Primary.ID {
+					return fmt.Errorf("DB Instance still exists")
+				}
+			}
+
+			// Verify the error
+			newerr, ok := err.(awserr.Error)
+			if !ok {
+				return err
+			}
+			if newerr.Code() != "InvalidDBInstance.NotFound" {
+				return err
+			}
+		} else if rs.Type == "aws_db_subnet_group" {
+			// Try to find the Group
+			var err error
+			resp, err := conn.DescribeDBSubnetGroups(
+				&rds.DescribeDBSubnetGroupsInput{
+					DBSubnetGroupName: aws.String(rs.Primary.ID),
+				})
+
+			if err == nil {
+				if len(resp.DBSubnetGroups) != 0 &&
+					*resp.DBSubnetGroups[0].DBSubnetGroupName == rs.Primary.ID {
+					return fmt.Errorf("DB Subnet group still exists")
+				}
+			}
+
+			// Verify the error
+			newerr, ok := err.(awserr.Error)
+			if !ok {
+				return err
+			}
+			if newerr.Code() != "InvalidDBInstance.NotFound" {
+				return err
 			}
 		}
 
-		// Verify the error
-		newerr, ok := err.(awserr.Error)
-		if !ok {
-			return err
-		}
-		if newerr.Code() != "InvalidDBInstance.NotFound" {
-			return err
-		}
 	}
 
 	return nil
@@ -166,34 +190,41 @@ func testAccCheckAWSDBInstanceExists(n string, v *rds.DBInstance) resource.TestC
 	}
 }
 
-// Database names cannot collide, and deletion takes so long, that making the
-// name a bit random helps so able we can kill a test that's just waiting for a
-// delete and not be blocked on kicking off another one.
-var testAccAWSDBInstanceConfig = fmt.Sprintf(`
-resource "aws_db_instance" "bar" {
-	identifier = "foobarbaz-test-terraform-%d"
-
-	allocated_storage = 10
-	engine = "MySQL"
-	engine_version = "5.6.21"
-	instance_class = "db.t1.micro"
-	name = "baz"
-	password = "barbarbarbar"
-	username = "foo"
-
-
-	# Maintenance Window is stored in lower case in the API, though not strictly 
-	# documented. Terraform will downcase this to match (as opposed to throw a 
-	# validation error).
-	maintenance_window = "Fri:09:00-Fri:09:30"
-
-	backup_retention_period = 0
-
-	parameter_group_name = "default.mysql5.6"
-}`, rand.New(rand.NewSource(time.Now().UnixNano())).Int())
+func testAccAWSDBInstanceConfig(val int) string {
+	var db_subnet_group_name_argument, db_subnet_group_resource = testAccDbSubnetConfig(val)
+	// Database names cannot collide, and deletion takes so long, that making the
+	// name a bit random helps so able we can kill a test that's just waiting for a
+	// delete and not be blocked on kicking off another one.
+	return fmt.Sprintf(`
+  %s
+  resource "aws_db_instance" "bar" {
+  	identifier = "foobarbaz-test-terraform-%d"
+  
+  	allocated_storage = 10
+  	engine = "MySQL"
+  	engine_version = "5.6.21"
+  	instance_class = "db.t1.micro"
+  	name = "baz"
+  	password = "barbarbarbar"
+  	username = "foo"
+    %s
+  
+  
+  	# Maintenance Window is stored in lower case in the API, though not strictly 
+  	# documented. Terraform will downcase this to match (as opposed to throw a 
+  	# validation error).
+  	maintenance_window = "Fri:09:00-Fri:09:30"
+  
+  	backup_retention_period = 0
+  
+  	parameter_group_name = "default.mysql5.6"
+  }`, db_subnet_group_resource, val, db_subnet_group_name_argument)
+}
 
 func testAccReplicaInstanceConfig(val int) string {
+	var db_subnet_group_name_argument, db_subnet_group_resource = testAccDbSubnetConfig(val)
 	return fmt.Sprintf(`
+  %s
 	resource "aws_db_instance" "bar" {
 		identifier = "foobarbaz-test-terraform-%d"
 
@@ -204,6 +235,7 @@ func testAccReplicaInstanceConfig(val int) string {
 		name = "baz"
 		password = "barbarbarbar"
 		username = "foo"
+    %s
 
 		backup_retention_period = 1
 
@@ -220,9 +252,27 @@ func testAccReplicaInstanceConfig(val int) string {
 		instance_class = "${aws_db_instance.bar.instance_class}"
 		password = "${aws_db_instance.bar.password}"
 		username = "${aws_db_instance.bar.username}"
+    %s
 		tags {
 			Name = "tf-replica-db"
 		}
 	}
-	`, val, val)
+	`, db_subnet_group_resource, val, db_subnet_group_name_argument, val, db_subnet_group_name_argument)
+}
+
+func testAccDbSubnetConfig(val int) (string, string) {
+	var db_subnet_group_name_argument = ""
+	var db_subnet_group_resource = ""
+	if subnet1 := os.Getenv("AWS_DEFAULT_SUBNET_1"); subnet1 != "" {
+		if subnet2 := os.Getenv("AWS_DEFAULT_SUBNET_2"); subnet2 != "" {
+			db_subnet_group_name_argument = `db_subnet_group_name = "${aws_db_subnet_group.foo.id}"`
+			db_subnet_group_resource = fmt.Sprintf(`
+    resource "aws_db_subnet_group" "foo" {
+      name = "foobarbaz-test-terraform-%d" 
+      description = "Terraform db subnet group"
+      subnet_ids = [ "%s", "%s" ]
+    }`, val, subnet1, subnet2)
+		}
+	}
+	return db_subnet_group_name_argument, db_subnet_group_resource
 }
